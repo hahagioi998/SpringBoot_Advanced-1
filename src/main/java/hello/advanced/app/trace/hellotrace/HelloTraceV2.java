@@ -68,16 +68,6 @@ public class HelloTraceV2 {
         }
         return sb.toString();
     }
-//    String addSpace(String prefix, int level) : 다음과 같은 결과를 출력한다.
-//    prefix: -->
-//    level 0:
-//    level 1: |-->
-//    level 2: | |-->
-//    prefix: <--
-//    level 0:
-//    level 1: |<--
-//    level 2: | |<--
-//    prefix: <X-level 0:
-//    level 1: |<X-level 2: | |<X-
+
 
 }
