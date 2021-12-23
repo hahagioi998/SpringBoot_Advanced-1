@@ -1,3 +1,7 @@
+
+
+
+
 ## SpringBoot Thread
 
 <hr>
@@ -233,12 +237,12 @@ public String request(String itemId){
 
 
 
-[8fe7bbff]  request OrderControllerV1
-[8251cfd5]  request OrderServiceV1
-[17348592]  request OrderRepositoryV1
-[17348592]  request OrderRepositoryV1 time=1007ms
-[8251cfd5]  request OrderServiceV1 time=1007ms
-[8fe7bbff]  request OrderControllerV1 time=1008ms
+*[8fe7bbff]  request OrderControllerV1*
+*[8251cfd5]  request OrderServiceV1*
+*[17348592]  request OrderRepositoryV1*
+*[17348592]  request OrderRepositoryV1 time=1007ms*
+*[8251cfd5]  request OrderServiceV1 time=1007ms*
+*[8fe7bbff]  request OrderControllerV1 time=1008ms*
 
 의 결과가 나오게 되는데 service와 repository는 `package hello.advanced.app.v1;` 의 패키지 안에서 보도록 하자.
 
@@ -256,12 +260,12 @@ public String request(String itemId){
 
 ✍️ 여기서 LEVEL은 이번 로그추적기를 만들면서 하위의 결과처럼 |--> 등과 같이 컨트롤러는 LEVEL이 0이여서 아무것도 출력하지 않았지만 두번째 서비스는 LEVEL이 1이여서 |-->를 출력했다. 이전에는 LEVEL에 대해서 값을 지정을 해주지 않아서 0으로 유지되었으며 |-->가 뜨지 않는게 당연했다.
 
-[af3ea3e9]  request OrderControllerV2
-[af3ea3e9] |--> request OrderServiceV2
-[af3ea3e9] |    |--> request OrderRepositoryV2
-[af3ea3e9] |    |<-- request OrderRepositoryV2 time=1005ms
-[af3ea3e9] |<-- request OrderServiceV2 time=1006ms
-[af3ea3e9]  request OrderControllerV2 time=1006ms
+*[af3ea3e9]  request OrderControllerV2*
+*[af3ea3e9] |--> request OrderServiceV2*
+*[af3ea3e9] |    |--> request OrderRepositoryV2*
+*[af3ea3e9] |    |<-- request OrderRepositoryV2 time=1005ms*
+*[af3ea3e9] |<-- request OrderServiceV2 time=1006ms*
+*[af3ea3e9]  request OrderControllerV2 time=1006ms*
 
 
 
@@ -349,4 +353,316 @@ private static String addSpace(String prefix, int level){
     level 1: |<X-
     level 2: | |<X-
 ```
+
+
+
+## ThreadLocal
+
+<hr>
+
+> 위의 예제에서는 컨트롤러에서 traceID 의 (트랜잭션) 유지를 위해서 인자로 일일이 traceID의 값을 넘겨주면서 sync메서드를 통해서 createNextId메서드를 통해 traceId를 얻어왔다.
+>
+> 하지만 이렇게 계속 컨트롤러 인자에 영향을 주면서 넘겨야 할까?
+
+그래서 기존에 소스코드에 `private TraceId traceIdHolder;` 의 필드를 추가를 해주었다.
+
+기존의 beginSync 메서드를 통한 동기화 말고 필드에 저장하고 동기화를 택한 것이다.
+
+beginSync 메서드는 사라지고 필드가 하나 생겼으며 메서드는 두개가 추가 되었다.
+
+```java
+private void syncTraceId(){
+    if(traceIdHolder == null){
+        traceIdHolder = new TraceId();           
+    }else{
+        traceIdHolder = traceIdHolder.createNextId
+    }
+}
+.
+.
+.
+private void releaseTraceId() {
+        if(traceIdHolder.isFirstLevel()){
+            traceIdHolder = null;//destroy
+        }else{
+            traceIdHolder = traceIdHolder.createPreviouslyId();
+        }
+    }
+}
+```
+
+`syncTraceId()`에서는 traceHolder 필드가 null로 비어있으면 첫 번째 트랜잭션의 로그라고 생각해서 생성자로 ID를 생성하고 LEVEL이 0인 traceID를 생성하게 된다.
+
+```java
+@Override
+public TraceStatus begin(String message) {
+    syncTraceId();
+    TraceId traceId = traceIdHolder;
+    Long startTimeMs = System.currentTimeMillis();
+    log.info("[{}] {} {}",
+             traceId.getId(),
+             addSpace(START_PREFIX, traceId.getLevel()),
+             message);
+    return new TraceStatus(traceId, startTimeMs, message);
+}
+```
+
+이런식으로 필드에 계속 동기화를 맞춰주게 되면 인자로 traceID를 받을 일도 없을 것이다.
+
+```java
+private void complete(TraceStatus status, Exception e) {
+    Long stopTime = System.currentTimeMillis();
+    long resultTimeMs = stopTime - status.getStartTimeMs();
+    TraceId traceId = status.getTraceId();
+	.
+    .
+    .
+    releaseTraceId();
+}
+```
+
+` releaseTraceId();` 또 이메서드가 하나 추가되었다.
+
+```java
+private void releaseTraceId() {
+    if(traceIdHolder.isFirstLevel()){
+        traceIdHolder = null;
+    }else{
+        traceIdHolder = traceIdHolder.createPreviouslyId();
+    }
+}
+
+//TraceID
+public boolean isFirstLevel(){
+    return level == 0;
+}
+```
+
+인자로 traceID를  받지 않고 컨트롤러에서 traceID가 유지되는 것이 아니라 필드에 유지 되어지는 것이기 때문에 LEVEL 체크를 통해서 마지막 로그이게 되면 `null` 상태로 변환시켜주게 되고 그게 아닐시 `createPreviouslyId()` 를 통해서 `id`는 유지하되 레벨을 `level - 1` 을 해주고 traceID를 반환받게 된다.
+
+기존 코드에서 (`package hello.advanced.app.v3;`)이렇게 필드에서 동기화를 수행하는게 가능해진다.
+
+
+
+#### 동시성 문제
+
+> ✍️ 하지만 이렇게 필드로 유지를 한다는 것은 정말 위험한 방법이다.
+>
+> 동시성 문제를 배재할 수 없다. 스프링은 항상 싱글톤을 베이스로 빈으로 등록되어지기 때문에 필드로 상태유지를 할 시에 다른 스레드가 접근하면 그 값을 똑같이 참조한다. 즉, 다른 스레드라도 트랜잭션 구분이 되어지지 않는다는 뜻이다.
+
+
+
+[nio-8080-exec-5] h.a.app.trace.logtrace.FieldLogTrace     : [e687ce3b] |--> MESSAGE
+[nio-8080-exec-5] h.a.app.trace.logtrace.FieldLogTrace     : [e687ce3b] |    |--> MESSAGE
+[nio-8080-exec-6] h.a.app.trace.logtrace.FieldLogTrace     : [e687ce3b] |    |    |--> MESSAGE
+[nio-8080-exec-6] h.a.app.trace.logtrace.FieldLogTrace     : [e687ce3b] |    |    |    |--> MESSAGE
+[nio-8080-exec-6] h.a.app.trace.logtrace.FieldLogTrace     : [e687ce3b] |    |    |    |    |--> MESSAGE
+[nio-8080-exec-7] h.a.app.trace.logtrace.FieldLogTrace     : [e687ce3b] |    |    |    |    |    |--> MESSAGE
+
+
+
+실제로 서버를 돌려놓고 요청을 컨트롤러에 동시에 주게 되면 다음과 같이 레벨이 깊게 파이고 트랜잭션 아이디도 구분이 되지 않는다. 여기서 트랜잭션 아이디를 구분하는 방법은 `[nio-8080-exec-5]`  가 톰캣에서 기본적으로 제공하는 스레드의 이름이다. 5,6,7 번이 동시에 요청을 했지만 필드가 서로 스레드간에 공유되어지고 있기 때문에 어쩔 수 없다.
+
+
+
+#### 동시성 문제의 자세한 고찰
+
+> 이 동시성 문제에 대한 기본적인 학습을 위한 코드를 테스트 코드에 작성을 했습니다. `package hello.advanced.trace.threadlocal;` 에서 다음의 코드는 밑의 코드와 같다.
+
+
+
+밑의 `FieldService` 클래스는 동시성 문제가 생기는 코드이다. 일단 `namestore` 필드를 서로 스레드에 공유해주기 위해서 만들었고 로직에는 인자로 넘어온`String` 값이 해당 공유변수에 들어가게 된다.
+
+그리고 가정하기 위해 저장하는데 1초가 걸린다고 전제를 깔았다.
+
+```java
+@Slf4j
+public class FieldService {
+    private String nameStore;
+
+    public String logic(String name){
+        log.info("저장 name={} -> nameStore={}",name,nameStore);
+        nameStore = name;
+        sleep(1000);
+        log.info("조회 nameStore={}",nameStore);
+        return nameStore;
+    }
+```
+
+그리고 밑의 코드는 스레드를 이용해서 동시성 오류를 내보았다.
+
+```java
+@Slf4j
+public class FieldServiceTest {
+    private FieldService fieldService = new FieldService();
+
+    @Test
+    public void field() {
+        Runnable userA = ()-> {
+            fieldService.logic("userA");
+        };
+        Runnable userB = ()-> {
+            fieldService.logic("userB");
+        };
+
+        Thread threadA = new Thread(userA);
+        threadA.setName("thread-A");
+        Thread threadB = new Thread(userB);
+        threadB.setName("thread-B");
+
+        threadA.start();
+        sleep(100);
+        threadB.start();
+        sleep(3000);
+        //SLEEP 메서드는 코드 축약을 위해 본 코드에서 잘라냄.
+    }
+}
+```
+*저장 name=userA -> nameStore=null*
+*저장 name=userB -> nameStore=userA*
+*조회 nameStore=userB*
+*조회 nameStore=userB*
+
+🧨중간에 A스레드가 1초를 넘기지 못하고 메인스레드가 당장 다음 스레드인 B스레드를 호출했을 때, B는 그 A가 저장되어있던 공유 변수를 중간에 탈취해서 자신의 `userB` 값을 저장하게 된다. 
+
+그러면 A스레드는 분명 `userA`를 저장하였지만 조회할 때는 `userB`를 조회하는 것이다.
+
+우리는 그래서 동시성 문제를 회피하기 위해서 자바가 기본적으로 제공하는 `java.lang.threadLocal` 을 사용한다.
+
+
+
+#### ThreadLocal 이란?
+
+<hr>
+
+>  스레드 로컬은 스레드 끼리 동시성 문제를 막고자 나온 클래스이다.
+>
+> 예를 들면 a라는 사람과 b라는 사람이 같은 창고를 쓰는데 ab라는 물건을 찾아야 한다. 둘다 ab를 예약했다고 해서 같은 시간에 똑같은 ab를 가질 수는 없다. 그래서 ab(1), ab(2) 수요에 맞춰서 보관하고 그에 맞춰서 1은 a에게 2는 b에게 맞춰서 줄 수 있다.
+
+```java
+public class ThreadLocalService {
+    private ThreadLocal<String> nameStore = new ThreadLocal<>();
+    public String logic(String name){
+        log.info("저장 name={} -> nameStore={}",name,nameStore.get());
+        nameStore.set(name);
+        sleep(100);
+        log.info("조회 nameStore={}",nameStore.get());
+        return nameStore.get();
+    }
+}
+```
+
+`private ThreadLocal<String> nameStore = new ThreadLocal<>();` 로 바꾸었고 달라진 점이 하나 있다면, `nameStore.get()` ,`nameStore.set(<Generic Type>)` ,`nameStore.remove()` 를 사용한다.
+
+저상태로 바꿔주고 위에서 테스트 코드 중 동시성 에러를 띄우는 `sleep(100);` 쪽도 상관이 없어지고 테스트코드를 돌리게 되면 결과 값은,
+
+*저장 name=userA -> nameStore=null*
+*조회 nameStore=userA*
+*저장 name=userB -> nameStore=null*
+*조회 nameStore=userB*
+
+이런식으로 첫번째 nameStore에는 null 이고 그 다음은 b여야 하는데 각각의 다른 저장소 필드를 사용하게 되어서 동시성 이슈가 해결이 되었다.
+
+<hr>
+
+이런 점을 V3 코드에 적용시켜 보았다.
+
+```java
+@Slf4j
+@Component
+public class ThreadLocalLogTrace implements LogTrace {
+
+    private static final String START_PREFIX = "-->";
+    private static final String COMPLETE_PREFIX = "<--";
+    private static final String EX_PREFIX = "<X-";
+
+    private ThreadLocal<TraceId> traceIdHolder = new ThreadLocal<>();
+    private void syncTraceId(){
+        TraceId traceId = traceIdHolder.get();
+        if(traceId == null){
+            traceIdHolder.set(new TraceId());
+        }else{
+            traceIdHolder.set(traceId.createNextId());
+        }
+    }
+
+    @Override
+    public TraceStatus begin(String message) {
+      
+        syncTraceId();
+        TraceId traceId = traceIdHolder.get();
+        Long startTimeMs = System.currentTimeMillis();
+        log.info("[{}] {} {}", traceId.getId(),
+                 addSpace(START_PREFIX, traceId.getLevel()),
+                 message);
+        return new TraceStatus(traceId, startTimeMs, message);
+    }
+
+    @Override
+    public void end(TraceStatus status) {
+        complete(status,null);
+    }
+
+    @Override
+    public void exception(TraceStatus status, Exception e) {
+        complete(status,e);
+    }
+
+    private void complete(TraceStatus status, Exception e) {
+        Long stopTime = System.currentTimeMillis();
+        long resultTimeMs = stopTime - status.getStartTimeMs();
+        TraceId traceId = status.getTraceId();
+
+        if(e == null){
+            log.info("[{}] {} {} time={}ms",status.getTraceId().getId(),
+                     addSpace(COMPLETE_PREFIX,traceId.getLevel()),
+                     status.getMessage(),
+                     resultTimeMs);
+        }else{
+            log.info("[{}] {} {} ex={}",
+                     status.getTraceId().getId(),addSpace(EX_PREFIX,traceId.getLevel()),
+                     status.getMessage(), e.toString());
+        }
+
+        releaseTraceId();
+    }
+
+    //public boolean isFirstLevel(){
+    //    return level == 0;
+    //}
+    private void releaseTraceId() {
+        TraceId traceId = traceIdHolder.get();
+        if(traceId.isFirstLevel()){
+            traceIdHolder.remove();//destroy
+        }else{
+            traceIdHolder.set(traceId.createPreviouslyId());
+        }
+        
+    }
+
+    private static String addSpace(String prefix, int level){
+        StringBuffer sb = new StringBuffer();
+        for (int i = 0; i<level; i++){
+            sb.append((i==level-1)?"|"+prefix:"|    ");
+        }
+        return sb.toString();
+    }
+}
+```
+
+traceID를 동시성 문제를 해결하기 위해 ThreadLocal 클래스에 집어넣었다.
+
+기존 코드에서 바뀔 필요 없이 해당 traceID를 쓰는 과정만 set, remove, get을 이용하여 사용해주자.
+
+
+
+> ![동시성_문제](동시성_문제.PNG)
+>
+> 🧨 remove를 사용해주어야 하는 이유는 was에서 요청이 들어왔을 때 스레드 풀에서 미리 스레드를 만들어 놓고 해당 스레드에게 접속을 허용한다. 그리고 그 스레드가 나갔을 때 스레드를 풀에 반환해서 다시 다음 사용자가 사용할 수 있도록 반환하도록 한다. 
+>
+> 하지만 스레드가 나오는 건 랜덤이라서 (재사용의 관점) 전에 쓰던 사용자의 스레드를 다른 사용자가 받게 되면 그 해당 스레드로컬을 조회할 때 전에 쓰던 사용자의 데이터를 넘겨 받을 수 있는 노릇이다.
+>
+> 그렇기 때문에 스레드의 작업이 끝나게 되면 remove로 스레드 로컬을 초기화 시켜주도록 하자.
+
+
 
