@@ -666,3 +666,199 @@ traceID를 동시성 문제를 해결하기 위해 ThreadLocal 클래스에 집�
 
 
 
+#### 템플릿 메서드 패턴
+
+<hr>
+
+> 위에서 짰던 로그추적기의 코드는 핵심(종단 관심) 로직과 부가적인 코드(횡단 관심)에 대해서 분리가 전혀 되지 않는다. 
+>
+> ```java
+> TraceStatus status = null;
+> try{
+>     status = logTrace.begin("request OrderControllerV3");
+>     orderServiceV3.orderItem(itemId);
+>     logTrace.end(status);
+>     return "ok";
+> }catch (Exception e){
+>     logTrace.exception(status, e);
+>     throw e;
+> }
+> ```
+>
+> 기존의 코드는 분리가 되지 않은 코드다 중복 되는 횡단관심의 코드들을 다 뽑아서 리팩토링해서 한번에 쓸 수 있다면 좋을 것 같지만 `try catch` 문 안에 있기도 하고 위아래로 `end,exception`, `begin` 이 핵심을 위아래로 감싸고 있다.
+>
+> 이를 해결할 수 있는 방법이 템플릿 메서드 패턴이다.
+
+```java
+@Test
+void templateMethodV0(){
+    logic1();
+    logic2();
+}
+```
+
+```java
+private void logic1(){
+    long startTime = System.currentTimeMillis();
+    log.info("비지니스 로직1 실행");
+    long endTime = System.currentTimeMillis();
+    long resultTime = endTime - startTime;
+    log.info("resultTime = {}",resultTime);
+}
+
+private void logic2(){
+    long startTime = System.currentTimeMillis();
+    log.info("비지니스 로직2 실행");
+    long endTime = System.currentTimeMillis();
+    long resultTime = endTime - startTime;
+    log.info("resultTime = {}",resultTime);
+}
+```
+
+시간을 출력하는 메서드를 제외하고 핵심 로직만 다른 상태를 유지하는 테스트코드를 만들었다.
+
+이제 이 소스코드를 템플릿 메서드 패턴으로 변환 시켜서 실행 시켜보겠다.
+
+```java
+@Slf4j
+public abstract class AbstractTemplate {
+    public void execute(){
+        long startTime = System.currentTimeMillis();
+        call();
+        long endTime = System.currentTimeMillis();
+        long resultTime = endTime - startTime;
+        log.info("resultTime = {}",resultTime);
+    }
+    protected abstract void call();
+}
+```
+
+템플릿 메서드 패턴은 부모 클래스와 자식 클래스 간의 상속구조와 오버라이딩을 이용해서 풀어내는 패턴을 말한다. 전체적인 `AbstractTemplate` 클래스에서 `execute`에 공통 로직(횡단 관심) 을 짜주고 그 밑에 오버라이딩 할 수 있게 추상메서드로 `call` 메서드를 만들어준다. 그리고 횡단 관심이 적혀있는 로직에 핵심로직이 들어가야 할 부분에 call을 적어준다. 
+
+여기서 `call()` 메서드는 핵심로직을 구현하기 위해 만들어주는 추상메서드이다. 이것을 이제 클래스로 구현해서 클래스를 상속받고 `call`을 구현해줄 것이다.
+
+```java
+@Slf4j
+public class SubClassLogic1 extends AbstractTemplate{
+    @Override
+    protected void call() {
+        log.info("비즈니스 로직1 실행");
+    }
+}
+```
+
+따로 클래스를 만들어 상속 받고 call 을 오버라이드 한 상태이다.
+
+이렇게 되면 자바 상속 구조 상 부모에서 call을 실행하게 되면 그 자식의 오버라이드 메서드를 자동으로 실행한다.
+
+```java
+AbstractTemplate template1 = new SubClassLogic1();
+template1.execute();
+```
+
+사용은 이렇게 한다. 이렇게 만들어주어도 되지만
+
+```java
+@Test
+private void templateMethodV2(){
+    AbstractTemplate template1 = new AbstractTemplate(){
+        @Override
+        protected void call() {
+            log.info("비지니스 로직1 실행");
+        }
+    };
+    template1.execute();
+}
+```
+
+익명클래스를 이용해서 하는 것도 클래스를 만들지 않고 일회성으로 사용하기 좋은 방법이다.
+
+
+
+##### 로그 추적기에 적용해보기
+
+<hr>
+
+```java
+public abstract class AbstractTemplate<T> {
+    private final LogTrace trace;
+
+    public AbstractTemplate(LogTrace trace){
+        this.trace = trace;
+    }
+
+    public T execute(String message){
+        TraceStatus status = null;
+        try {
+            status = trace.begin(message);
+            T result = call();
+            trace.end(status);
+
+            return result;
+        }catch (Exception e){
+            trace.exception(status,e);
+            throw e;
+        }
+    }
+
+    protected abstract T call();
+}
+```
+
+로그 추적기를 템플릿 메서드 패턴으로 구현해주기 위해서는 이전 메서드와 같이 execute를 정의해주는데 반환 타입은 T인 제네릭클래스로 받았다.
+
+Service Repository Controller 단에서 각자 반환되는 형태가 달라서 제네릭으로 일단 설정했다.
+
+`protected abstract T call();` 이제 이 메서드를 구현해줄 차례인데 이너클래스로 적도록 하겠다.
+
+```java
+@RestController
+@RequiredArgsConstructor
+public class OrderControllerV4 {
+
+    private final OrderServiceV4 orderServiceV4;
+    private final LogTrace trace;
+
+    @GetMapping("/v4/request")
+    public String request(String itemId){
+
+        AbstractTemplate<String> template = new AbstractTemplate<String>(trace) {
+            @Override
+            protected String call() {
+                orderServiceV4.orderItem(itemId);
+                return "ok";
+            }
+        };
+        return template.execute("OrderController request V4");
+    }
+}
+```
+
+확실히 `try/catch`문을 쓸 때 보다 정말 많이 간편해졌다.
+
+inner클래스로 인해서 많이 깔끔해지긴 했다.
+
+#### template method pattern 의 단점
+
+<hr>
+
+템플릿 메서드 패턴 자체가 단일책임 원칙을 지키면서 전체적인 구조를 변경하지 않고 특정 부분만 수정을해서 사용할 수 있다는 장점이 있지만 템플릿 메서드 패턴은 <b>상속</b>을 사용한다.
+
+이게 문제가 무엇이냐면 의존관계에 문제가 있다. 자식은 부모의 속성을 전혀 사용하지 않았는데 자식은 부모의 속성을 다 알고 있다. 그리고 자식이 부모를 향하고 있는 상속의 구조는 부모에 만약에 call 말고 call2 추상메서드가 정의 되었다고 하면 하나하나 자식클래스에다가 대고 오버라이드해주어야한다.
+
+이는 정말 좋은 설계가 아니다.
+
+부모를 강하게 의존하고 있다는 단점을 커번 패턴이 전략 패턴이다.
+
+이번엔 전략 패턴에 대해서 알아보도록 하겠다.
+
+
+
+### 전략 패턴
+
+<hr>
+
+
+
+
+
