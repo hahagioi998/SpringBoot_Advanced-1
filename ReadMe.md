@@ -854,11 +854,9 @@ inner클래스로 인해서 많이 깔끔해지긴 했다.
 
 
 
-### 전략 패턴
-
-<hr>
 
 
+다음 내용부터는 [Notion](https://complete-bill-893.notion.site/SpringBoot-84228dc34113423a89e24d73c83f5a84) < 이곳에 기술하도록 한다.
 
-
+(노션을 지금 알았다는 건 비밀...)
 
